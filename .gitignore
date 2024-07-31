@@ -1,0 +1,13 @@
+# IntelliJ
+.idea/
+
+# env
+.env
+
+# venv
+venv/
+
+# cache
+djangoProject/__pycache__/
+chatgpt/__pycache__/
+chatgpt/migrations/__pycache__/

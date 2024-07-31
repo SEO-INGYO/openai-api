@@ -1,0 +1,245 @@
+{% load sass_tags %}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatGPT API</title>
+    <link href="{% sass_src 'scss/styles.scss' %}" rel="stylesheet" type="text/css" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet"/>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/prism.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+
+<div class="sidebar">
+    <h2>대화 이력</h2>
+    <div id="session-container">
+        <label for="session-select">세션 선택:</label>
+        <select class="form-select" id="session-select">
+            <option value="" selected>새 세션 시작</option>
+            {% for session in sessions %}
+                <option value="{{ session.session_id }}">{{ session.session_id }}</option>
+            {% endfor %}
+        </select>
+        <button id="new-session-btn">새 세션 시작</button>
+    </div>
+</div>
+
+<div class="chat-container">
+    <div class="row g-2 mb-3 align-items-center">
+        <div class="col-auto">
+            <label class="form-label mb-0" for="model-select">모델 선택</label>
+        </div>
+        <div class="col-auto">
+            <select class="form-select" id="model-select">
+                <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                <option value="gpt-4">gpt-4</option>
+                <option value="gpt-4o">gpt-4o</option>
+            </select>
+        </div>
+        <div class="col-auto">
+            <label class="form-label mb-0" for="openai_api_key">API 키 입력</label>
+        </div>
+        <div class="col-auto">
+            <input type="text" class="form-control" id="openai_api_key" name="openai_api_key" required>
+        </div>
+        <div class="col-auto">
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="remember_api_key" name="remember_api_key" value="true">
+                <label class="form-check-label" for="remember_api_key">API 키 저장</label>
+            </div>
+        </div>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <form id="message-form">
+        {% csrf_token %}
+        <div class="chat-input input-group mb-3 form-floating">
+            <textarea class="form-control" placeholder="대화 내용을 입력해주세요." id="user-input"></textarea>
+            <label for="user-input">채팅</label>
+            <button class="btn btn-outline-secondary" type="submit">전송</button>
+        </div>
+    </form>
+</div>
+
+<script>
+$(document).ready(function() {
+    const userInput = $('#user-input');
+    const sessionSelect = $('#session-select');
+    const chatMessages = $('#chat-messages');
+    const chatHistory = $('#chat-history');
+
+    let session_id = localStorage.getItem('session_id');
+
+    loadChatHistory();
+
+    const savedApiKey = localStorage.getItem('openai_api_key');
+
+    if (savedApiKey) {
+        $('#openai_api_key').val(savedApiKey);
+        $('#remember_api_key').prop('checked', true);
+    }
+
+    $('#new-session-btn').on('click', function() {
+        startNewSession();
+    });
+
+    sessionSelect.on('change', function() {
+        session_id = $(this).val();
+        localStorage.setItem('session_id', session_id);
+        loadChatHistory();
+    });
+
+    $('#message-form').on('submit', function(event) {
+        event.preventDefault();
+
+        const userMessage = userInput.val().trim();
+        const model = $('#model-select').val();
+        const apiKey = $('#openai_api_key').val();
+        userInput.val('');
+        if (userMessage === '') return;
+
+        appendMessage(userMessage, true);
+
+        $.ajax({
+            type: 'POST',
+            url: '{% url "get-response" %}',
+            data: {
+                'message': userMessage,
+                'model': model,
+                'key': apiKey,
+                'session_id': session_id,
+                'csrfmiddlewaretoken': '{{ csrf_token }}'
+            },
+            success: function(response) {
+                const botResponse = response.response;
+                session_id = response.session_id;
+                localStorage.setItem('session_id', session_id);
+                appendMessage(botResponse, false);
+                saveChatHistory(userMessage, botResponse);
+            },
+            error: function(error) {
+                console.log('Error:', error);
+            }
+        });
+    });
+
+    userInput.keydown(function(event) {
+        if (event.shiftKey && event.keyCode === 13) {
+            const content = this.value;
+            const caret = this.selectionStart;
+            this.value = content.substring(0, caret) + '\n' + content.substring(caret);
+            event.stopPropagation();
+        }
+    });
+
+    $(document).on('submit', 'form', function(event) {
+        event.preventDefault();
+
+        const openaiApiKey = $('#openai_api_key').val().trim();
+        const rememberApiKey = $('#remember_api_key').is(':checked');
+
+        if (rememberApiKey) {
+            localStorage.setItem('openai_api_key', openaiApiKey);
+        } else {
+            localStorage.removeItem('openai_api_key');
+        }
+    });
+
+    function appendMessage(message, isUser) {
+        const messageClass = isUser ? 'user-message' : '';
+        const {formattedMessage, isCode} = formatMessage(message);
+
+        const messageHtml = `<div class="message ${messageClass}">${formattedMessage}</div>`;
+        chatMessages.append(messageHtml);
+
+        if (isCode) {
+            Prism.highlightAll();
+        }
+
+        chatMessages.scrollTop(chatMessages[0].scrollHeight);
+    }
+
+    function formatMessage(message) {
+        const codeBlockPattern = /```([\w+]+)?\n([\s\S]*?)```/g;
+        const matches = message.matchAll(codeBlockPattern);
+        let formattedMessage = message;
+        let isCode = false;
+
+        for (const match of matches) {
+            const [fullMatch, lang, code] = match;
+            isCode = true;
+            const languageClass = lang ? `language-${lang}` : 'language-none';
+            formattedMessage = formattedMessage.replace(fullMatch, `<pre class="line-numbers"><code class="${languageClass}">${escapeHtml(code)}</code></pre>`);
+        }
+
+        if (!isCode) {
+            formattedMessage = escapeHtml(message).replace(/\n/g, '<br>');
+        }
+
+        return {formattedMessage, isCode};
+    }
+
+    function saveChatHistory(userMessage, botResponse) {
+        const userMessageHtml = formatMessage(userMessage).formattedMessage;
+        const botResponseHtml = formatMessage(botResponse).formattedMessage;
+
+        chatHistory.append(`<div>User: ${userMessageHtml}</div>`);
+        chatHistory.append(`<div>Bot: ${botResponseHtml}</div>`);
+    }
+
+    function loadChatHistory() {
+        removeChat();
+        if (session_id) {
+            $.ajax({
+                type: 'GET',
+                url: '{% url "get-session-history" %}',
+                data: {'session_id': session_id},
+                success: function(response) {
+                    const chatHistory = response.history;
+                    chatHistory.forEach(chat => {
+                        if (chat.user) {
+                            appendMessage(chat.user, true);
+                        }
+                        if (chat.bot) {
+                            appendMessage(chat.bot, false);
+                        }
+                    });
+                },
+                error: function(error) {
+                    console.log('Error:', error);
+                }
+            });
+        } else {
+            appendMessage('안녕하세요! 무엇을 도와드릴까요?', false);
+        }
+    }
+
+    function startNewSession() {
+        session_id = '';
+        localStorage.removeItem('session_id');
+        removeChat();
+        sessionSelect.val('');
+        loadChatHistory();
+    }
+
+    function removeChat() {
+        chatMessages.empty();
+        chatHistory.empty();
+        userInput.val('');
+    }
+
+    function escapeHtml(text) {
+        return text
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+});
+</script>
+
+</body>
+</html>
